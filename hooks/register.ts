@@ -23,13 +23,32 @@ type Block = { type: string; [field: string]: unknown }
 // Counts only, never values. Starts over on a reload.
 let sessionTotal = 0
 
+// The engine labels toasts and the status line with the plugin's name, so
+// these texts carry none of their own. Deny texts do: the model reads those.
 function notify($: EngineInterface, where: string, kinds: readonly Kind[]): void {
   sessionTotal += kinds.length
-  $.ui.toast(`secret-redact: redacted ${summarize(kinds)} in ${where}`)
-  $.ui.status(`secret-redact: ${sessionTotal} redacted this session`)
+  $.ui.toast(`redacted ${summarize(kinds)} in ${where}`)
+  $.ui.status(`${sessionTotal} redacted this session`)
 }
 
 export const register: Register = on => {
+  // The prompt history (history.jsonl) records what this hook passes down, so a
+  // typed prompt is redacted here as well as in its conversation row. A slash
+  // command's line is left as typed: the engine applies no rewrite to it. A
+  // prompt the person did not type (isMeta) takes no rewrite when it starts a
+  // turn, so it passes as is; session.append redacts its stored row.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.command !== undefined || e.isMeta === true) return next(e)
+    const text = redact(e.text)
+    const context = e.context?.map(c => redact(c))
+    const kinds = [...text.kinds, ...(context?.flatMap(c => c.kinds) ?? [])]
+    if (kinds.length === 0) return next(e)
+    notify($, 'the prompt', kinds)
+    return next(context === undefined ? { ...e, text: text.text } : { ...e, text: text.text, context: context.map(c => c.text) })
+  }).catch(($, e, next) =>
+    next.called ? next(e) : { drop: 'secret-redact: redaction failed, so this prompt was not sent (fail closed).' },
+  )
+
   on('tool.call', async ($, e, next) => {
     const r = await next(e)
 
@@ -96,7 +115,7 @@ export const register: Register = on => {
     if (next.called) return next(e)
     // The redaction itself failed. A row cannot be refused here, so swap any
     // block that even looks like it holds a secret for a notice and keep the rest.
-    const SUSPECT = /eyJ|sb_secret_|sk-|gh[pousr]_|github_pat_|vc[pk]_|lin_(?:api|oauth)_|AKIA|ASIA|PRIVATE KEY|KEY=|SECRET|TOKEN|PASSWORD/i
+    const SUSPECT = /eyJ|sb_secret_|sk-|gh[pousr]_|github_pat_|vc[pk]_|lin_(?:api|oauth)_|AKIA|ASIA|PRIVATE KEY|KEY=|SECRET|TOKEN|PASSWORD|PASSWD/i
     const withheld = '[secret-redact: redaction failed, so this block was not stored]'
     const content = e.message.content.map((block: Block): Block => {
       if (block.type === 'text' && typeof block.text === 'string' && SUSPECT.test(block.text)) {
