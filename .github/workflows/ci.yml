@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mod:
+    name: Claude Code mod
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Move these when the mod takes up newer hook APIs.
+      CLAUDE_CODE_VERSION: 2.1.296
+      TYPESCRIPT_VERSION: 7.0.2
+      DISABLE_AUTOUPDATER: '1'
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install Claude Code and TypeScript
+        run: |
+          npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION" "typescript@$TYPESCRIPT_VERSION"
+          claude --version | tee /dev/stderr | grep -q "^$CLAUDE_CODE_VERSION "
+          tsc -v
+
+      # No login: validate and test run offline. A fresh config folder keeps the runner's state out.
+      - name: claude plugin validate --strict
+        env:
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-cfg
+        run: claude plugin validate --strict .
+
+      - name: claude plugin test
+        env:
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-cfg
+        run: claude plugin test .
+
+      # The type files (.claude-plugin/types/) are laid by Claude Code when it loads a mod, and only a session start
+      # loads one. Start a session logged out, onboarding done and this folder trusted, wait for the files, then stop it.
+      - name: Lay the mod type files
+        env:
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-cfg
+        run: |
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          jq -n --arg cwd "$PWD" '{hasCompletedOnboarding: true, theme: "dark", projects: {($cwd): {hasTrustDialogAccepted: true}}}' \
+            > "$CLAUDE_CONFIG_DIR/.claude.json"
+          TERM=xterm-256color script -qec "claude --plugin-dir ." "$RUNNER_TEMP/session.log" < /dev/null > /dev/null 2>&1 &
+          pid=$!
+          for _ in $(seq 90); do
+            [ -f .claude-plugin/types/tsconfig.json ] && break
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          pkill -TERM -f '^claude --plugin-dir \.' || true
+          sleep 2
+          pkill -KILL -f '^claude --plugin-dir \.' || true
+          if [ ! -f .claude-plugin/types/tsconfig.json ]; then
+            echo "::error::Claude Code did not lay .claude-plugin/types/ within 90s; session log follows"
+            sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$RUNNER_TEMP/session.log" | tail -40
+            exit 1
+          fi
+
+      - name: tsc
+        run: tsc -p .

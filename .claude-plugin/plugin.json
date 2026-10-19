@@ -1,0 +1,21 @@
+{
+  "name": "secret-redact",
+  "version": "0.1.0",
+  "description": "Redacts secrets (Supabase service_role JWTs, API keys, private keys, .env and JSON config secrets) from tool results and conversation rows before the model reads them or the transcript stores them",
+  "author": {
+    "name": "C10",
+    "url": "https://github.com/c10dev"
+  },
+  "homepage": "https://github.com/c10dev/secret-redact",
+  "repository": "https://github.com/c10dev/secret-redact",
+  "license": "Apache-2.0",
+  "keywords": [
+    "security",
+    "secrets",
+    "redaction",
+    "transcript",
+    "api-keys",
+    "supabase",
+    "mod"
+  ]
+}

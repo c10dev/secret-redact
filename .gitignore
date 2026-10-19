@@ -1,0 +1,5 @@
+node_modules/
+*.tmp
+
+# Laid by Claude Code when it loads the mod; per-build, not source
+.claude-plugin/types/

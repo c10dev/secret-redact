@@ -1,0 +1,18 @@
+{
+  "name": "secret-redact",
+  "owner": {
+    "name": "C10",
+    "url": "https://github.com/c10dev"
+  },
+  "description": "secret-redact: redact secrets before Claude reads them or the transcript stores them",
+  "plugins": [
+    {
+      "name": "secret-redact",
+      "source": "./",
+      "description": "Redacts secrets (Supabase service_role JWTs, API keys, private keys, .env and JSON config secrets) from tool results and conversation rows before the model reads them or the transcript stores them",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "security"
+    }
+  ]
+}
