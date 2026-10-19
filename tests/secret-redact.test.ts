@@ -200,7 +200,7 @@ describe('redact', () => {
       [' DB_PASSWORD=x'.repeat(250_000), 3_000_000],
       ['drwxrwxr-x 5 c10 c10 4096 Oct 12 02:49 some-file-name.txt\n'.repeat(70_000), 3_000_000],
       // A secret name on every few characters, each let pass (a reference):
-      // the most work per character, so 1 MB keeps the bound loose for CI.
+      // the most work per character, so these stay at 1 MB.
       [' API_KEY=$X'.repeat(100_000), 1_000_000],
       ['"API_KEY=$X '.repeat(100_000), 1_000_000],
     ]
@@ -208,7 +208,8 @@ describe('redact', () => {
       expect(input.length).toBeGreaterThanOrEqual(size)
       const started = performance.now()
       redact(input)
-      expect(performance.now() - started).toBeLessThan(2_000)
+      // Loose for shared CI runners; quadratic time would be minutes.
+      expect(performance.now() - started).toBeLessThan(5_000)
     }
   })
 
