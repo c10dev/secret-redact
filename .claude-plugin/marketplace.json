@@ -10,7 +10,7 @@
       "name": "secret-redact",
       "source": "./",
       "description": "Redacts secrets (Supabase service_role JWTs, API keys, private keys, .env and JSON config secrets) from tool results and conversation rows before the model reads them or the transcript stores them",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "license": "Apache-2.0",
       "category": "security"
     }

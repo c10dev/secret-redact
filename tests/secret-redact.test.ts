@@ -111,6 +111,107 @@ describe('redact', () => {
     expect(r.kinds).toEqual(['env-secret', 'env-secret', 'env-secret', 'env-secret'])
   })
 
+  test('a name that starts with the keyword is caught too', () => {
+    const value = 'pW9'.repeat(6)
+    const names = ['PASSWORD', 'TOKEN', 'SECRET', 'KEY', 'PASSWD', 'TOKEN_GITHUB', 'PASSWORD_DB', 'KEY_ID', 'API_KEYS']
+    for (const name of names) {
+      const r = redact(`${name}=${value}`)
+      expect(r.text).toBe(`${name}=[redacted:env-secret]`)
+      expect(r.kinds).toEqual(['env-secret'])
+    }
+    expect(redact(`export PASSWORD=${value}`).text).toBe('export PASSWORD=[redacted:env-secret]')
+  })
+
+  test('an env line is caught behind any prefix a tool puts in front of it', () => {
+    const value = 'dB5'.repeat(6)
+    const lines = [
+      `3:DB_PASSWORD=${value}`, // Grep tool, content mode
+      `./app/.env:2:DB_PASSWORD=${value}`, // grep -rn
+      `.env-3-DB_PASSWORD=${value}`, // grep context line
+      `     2\tDB_PASSWORD=${value}`, // cat -n, Read
+      `+DB_PASSWORD=${value}`, // git diff
+      `-DB_PASSWORD=${value}`,
+      `DB_PASSWORD = ${value}`,
+      `ENV DB_PASSWORD=${value}`, // Dockerfile
+      `      - DB_PASSWORD=${value}`, // compose
+      `declare -x DB_PASSWORD=${value}`,
+    ]
+    for (const line of lines) {
+      const r = redact(line)
+      expect(leaks(r.text, value)).toEqual([])
+      expect(r.text).toEndWith('[redacted:env-secret]')
+      expect(r.kinds).toEqual(['env-secret'])
+    }
+  })
+
+  test('a name the rule lets pass does not hide a secret later on its line', () => {
+    const value = 'tK7'.repeat(6)
+    expect(redact(`NODE_ENV=production DB_PASSWORD=${value} node app.js`).text).toBe(
+      'NODE_ENV=production DB_PASSWORD=[redacted:env-secret]',
+    )
+    expect(redact(`docker run -e API_KEY=$KEY -e DB_PASSWORD=${value} img`).text).toBe(
+      'docker run -e API_KEY=$KEY -e DB_PASSWORD=[redacted:env-secret]',
+    )
+    // docker inspect: the value ends at the closing quote.
+    expect(redact(`    "NODE_ENV=production",\n    "DB_PASSWORD=${value}",`).text).toBe(
+      '    "NODE_ENV=production",\n    "DB_PASSWORD=[redacted:env-secret]",',
+    )
+    expect(leaks(redact(`https://x.test/api?TOKEN=${value}&page=2`).text, value)).toEqual([])
+  })
+
+  test('a keyword inside an unrelated word is not a secret name', () => {
+    const plain = [
+      'MONKEY_NAME=george',
+      'TURKEY_COUNT=12345',
+      'KEYBOARD_LAYOUT=dvorak',
+      'TOKENIZER_PATH=models/tok',
+      'MAX_TOKENS=4096',
+      '{"tokenizer": "cl100k_base_tokenizer"}',
+      '{"max_tokens_limit": "unlimitedunlimited"}',
+      '{"monkey": "georgegeorgegeorge"}',
+      // code: comparisons, and numbers or literals after `NAME = `
+      'if TOKEN == "fakefakefake":',
+      'MAX_OUTPUT_TOKENS = 4096',
+      'API_KEY_LENGTH = 32',
+      'API_KEYS = [',
+    ].join('\n')
+    const r = redact(plain)
+    expect(r.text).toBe(plain)
+    expect(r.kinds).toEqual([])
+  })
+
+  test('glued names and camelCase JSON names are still secret names', () => {
+    const value = 'gL1'.repeat(6)
+    for (const name of ['APIKEY', 'SECRETKEY', 'ACCESSTOKEN', 'DBPASSWORD']) {
+      expect(redact(`${name}=${value}`).text).toBe(`${name}=[redacted:env-secret]`)
+    }
+    expect(redact(`{"accessToken": "${value}", "client_secret": "${value}"}`).text).toBe(
+      '{"accessToken": "[redacted:json-secret]", "client_secret": "[redacted:json-secret]"}',
+    )
+  })
+
+  test('each rule stays linear on multi-megabyte input', { timeoutMs: 30_000 }, () => {
+    // The 0.1.0 rules took seconds on 120 KB of the first two; quadratic time
+    // would take minutes at 3 MB.
+    const inputs: Array<[string, number]> = [
+      ['A' + 'KEY'.repeat(1_000_000), 3_000_000],
+      ['"' + 'key'.repeat(1_000_000), 3_000_000],
+      ['DB_PASSWORD=hunter2hunter2\nNODE_ENV=production\n'.repeat(80_000), 3_000_000],
+      [' DB_PASSWORD=x'.repeat(250_000), 3_000_000],
+      ['drwxrwxr-x 5 c10 c10 4096 Oct 12 02:49 some-file-name.txt\n'.repeat(70_000), 3_000_000],
+      // A secret name on every few characters, each let pass (a reference):
+      // the most work per character, so 1 MB keeps the bound loose for CI.
+      [' API_KEY=$X'.repeat(100_000), 1_000_000],
+      ['"API_KEY=$X '.repeat(100_000), 1_000_000],
+    ]
+    for (const [input, size] of inputs) {
+      expect(input.length).toBeGreaterThanOrEqual(size)
+      const started = performance.now()
+      redact(input)
+      expect(performance.now() - started).toBeLessThan(2_000)
+    }
+  })
+
   test('a service_role JWT under a public name is still caught by its value', () => {
     const r = redact(`NEXT_PUBLIC_SUPABASE_ANON_KEY=${SERVICE_JWT}`)
     expect(r.text).toBe('NEXT_PUBLIC_SUPABASE_ANON_KEY=[redacted:supabase-service-role-jwt]')
@@ -169,8 +270,11 @@ describe('tool.call', () => {
     expect(toasts.length).toBe(1)
     expect(leaks(toasts.join('\n'), SERVICE_JWT, FAKE.ghp)).toEqual([])
     expect(toasts[0]).toContain('2 values')
+    // The engine labels toasts and the status with the plugin's name already.
+    expect(toasts[0]).not.toContain('secret-redact')
     expect(statuses.length).toBe(1)
     expect(leaks(statuses.join('\n'), SERVICE_JWT, FAKE.ghp)).toEqual([])
+    expect(statuses[0]).toBe('2 redacted this session')
   })
 
   test('Read content is redacted', async ($, on) => {
@@ -208,6 +312,27 @@ describe('tool.call', () => {
     expect(leaks(JSON.stringify(r), FAKE.linear)).toEqual([])
   })
 
+  test('Grep content lines of a .env file are redacted behind their N: prefix', async ($, on) => {
+    const password = 'pW9'.repeat(6)
+    const dbPassword = 'dB5'.repeat(6)
+    const content = [`1:PASSWORD=${password}`, '2:NODE_ENV=production', `3:DB_PASSWORD=${dbPassword}`, `4:GITHUB_TOKEN=${FAKE.ghp}`].join('\n')
+    on('tool.call', () => ({
+      ref: 9,
+      result: { mode: 'content', numFiles: 1, filenames: [], content, numLines: 4 },
+      text: content,
+    }))
+    const r = await callTool($, { tool: 'Grep', pattern: '=', output_mode: 'content' })
+    expect(r.deny).toBeUndefined()
+    expect(leaks(JSON.stringify(r), password, dbPassword, FAKE.ghp)).toEqual([])
+    const out = r.result as { content: string }
+    expect(out.content.split('\n')).toEqual([
+      '1:PASSWORD=[redacted:env-secret]',
+      '2:NODE_ENV=production',
+      '3:DB_PASSWORD=[redacted:env-secret]',
+      '4:GITHUB_TOKEN=[redacted:github]',
+    ])
+  })
+
   test('ordinary output passes through untouched', async ($, on) => {
     const core = { ref: 3, result: { stdout: 'hello\n', stderr: '', interrupted: false }, text: 'hello' }
     on('tool.call', () => core)
@@ -237,6 +362,49 @@ describe('tool.call', () => {
     // `await next(e)` throws and its .catch answers.
     const r = await callTool($, { tool: 'Bash', command: 'date' })
     expect(r.deny).toContain('fail closed')
+  })
+})
+
+describe('prompt.submit', () => {
+  // Each test's own hook is the bottom of the chain: what it sees is what the
+  // prompt history records.
+  test('a typed prompt reaches the history redacted', async ($, on) => {
+    const seen: Array<{ text: string; context?: readonly string[] }> = []
+    on('prompt.submit', ($, e) => {
+      seen.push({ text: e.text, context: e.context })
+      return { text: e.text }
+    })
+    await $.prompt.submit({
+      text: `use ${FAKE.anthropicOauth} and PASSWORD=${'pW9'.repeat(6)} please`,
+      context: [`TOKEN=${'tK7'.repeat(6)}`],
+      wait: false,
+      origin: { kind: 'composer' },
+    } as never)
+    expect(seen.length).toBe(1)
+    expect(seen[0]?.text).toBe('use [redacted:anthropic] and PASSWORD=[redacted:env-secret]')
+    expect(seen[0]?.context).toEqual(['TOKEN=[redacted:env-secret]'])
+    expect(leaks(JSON.stringify(seen), FAKE.anthropicOauth, 'pW9pW9', 'tK7tK7')).toEqual([])
+  })
+
+  test('a slash command passes as typed', async ($, on) => {
+    const seen: string[] = []
+    on('prompt.submit', ($, e) => {
+      seen.push(e.text)
+      return { text: e.text }
+    })
+    const text = `/review ${FAKE.ghp}`
+    await $.prompt.submit({ text, command: { name: 'review', args: FAKE.ghp }, wait: false, origin: { kind: 'composer' } } as never)
+    expect(seen).toEqual([text])
+  })
+
+  test('an ordinary prompt passes unchanged', async ($, on) => {
+    const seen: string[] = []
+    on('prompt.submit', ($, e) => {
+      seen.push(e.text)
+      return { text: e.text }
+    })
+    await $.prompt.submit({ text: 'set MAX_TOKENS = 4096 please', wait: false, origin: { kind: 'composer' } } as never)
+    expect(seen).toEqual(['set MAX_TOKENS = 4096 please'])
   })
 })
 
