@@ -28,7 +28,7 @@ Every rule runs in time linear in its input, and a test holds multi-megabyte inp
 It is a Claude Code mod: a TypeScript hooks module (`hooks/register.ts`) that Claude Code loads in-process, not a shell command hook. It hooks three places.
 
 - **Every tool call**, subagents' included. For Bash, Read, Grep, Glob, Edit, Write, NotebookEdit, WebFetch, WebSearch and Agent it returns the same result with every string redacted. For any other tool (MCP tools included), for an errored result, and for a known tool whose text holds a secret its structured result does not, a hit withholds the result and the model gets only the redacted text.
-- **Every prompt you submit**, before the prompt history (`history.jsonl`) records it. A slash command's line passes as typed.
+- **Every prompt you submit**, before the prompt history (`history.jsonl`) records it. A slash command's line passes as typed, and so does a prompt you did not type (a delivery or notification), whose conversation row is still redacted.
 - **Every conversation row** (pasted prompts, model text, deliveries, attachments) before it is written: text blocks and tool-result text are redacted.
 
 It fails closed. If the redaction itself throws, the tool result is withheld and the prompt is not sent; for a conversation row, any block that even looks like it holds a secret is replaced by a notice.
