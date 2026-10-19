@@ -37,8 +37,11 @@ export const register: Register = on => {
   // command's line is left as typed: the engine applies no rewrite to it. A
   // prompt the person did not type (isMeta) takes no rewrite when it starts a
   // turn, so it passes as is; session.append redacts its stored row.
+  // `command` and `isMeta` are newer than the Claude Code version CI pins
+  // (2.1.296), so they are read loosely; an engine without them sends neither.
   on('prompt.submit', async ($, e, next) => {
-    if (e.command !== undefined || e.isMeta === true) return next(e)
+    const flags = e as { readonly command?: unknown; readonly isMeta?: unknown }
+    if (flags.command !== undefined || flags.isMeta === true) return next(e)
     const text = redact(e.text)
     const context = e.context?.map(c => redact(c))
     const kinds = [...text.kinds, ...(context?.flatMap(c => c.kinds) ?? [])]
